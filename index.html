@@ -8,29 +8,23 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script type="importmap">
-      {
-        "imports": {
-          "react-dom/client": "https://aistudiocdn.com/react-dom@^19.2.0/client",
-          "@google/genai": "https://aistudiocdn.com/@google/genai@^1.25.0",
-          "react": "https://aistudiocdn.com/react@^19.2.0"
-        }
-      }
-    </script>
+{
+  "imports": {
+    "react-dom/client": "https://aistudiocdn.com/react-dom@^19.2.0/client",
+    "react": "https://aistudiocdn.com/react@^19.2.0",
+    "@google/genai": "https://aistudiocdn.com/@google/genai@^1.25.0"
+  }
+}
+</script>
   </head>
   <body class="bg-slate-900 text-white">
     <div id="root"></div>
     
-    <!-- Polyfill for process.env -->
-    <script>
-      window.process = window.process || { env: {} };
-    </script>
-
     <script type="text/babel" data-type="module">
       // --- All application code is now in this single file ---
 
-      import React, { useState, useEffect, useCallback } from 'react';
+      import React, { useState, useEffect, useCallback, useRef } from 'react';
       import ReactDOM from 'react-dom/client';
-      import { GoogleGenAI, Type } from "@google/genai";
 
       // --- from types.ts ---
       const GameState = {
@@ -44,71 +38,41 @@
         Win: 7,
       };
       Object.freeze(GameState);
-
-      // --- from services/geminiService.ts ---
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      
+      // --- AI Service (Client-side) ---
+      // Fungsi ini sekarang memanggil backend kita, bukan Google AI secara langsung.
       async function getSeekerClue(availableNumbers, round, difficulty) {
         try {
-          const prompt = `Anda adalah "pencari" dalam permainan petak umpet angka.
-      Ini adalah ronde ${round}.
-      Tingkat kesulitan yang diminta adalah ${difficulty} dari 10.
-
-      Angka yang tersedia untuk Anda pilih adalah: [${availableNumbers.join(', ')}].
-
-      Tugas Anda:
-      1. Secara rahasia, pilih satu angka dari daftar yang tersedia.
-      2. Buat petunjuk tentang angka yang Anda pilih, sesuaikan kerumitan petunjuk dengan tingkat kesulitan yang diminta:
-         - **Tingkat 1 (Sangat Mudah):** Berikan petunjuk yang sangat langsung dan jelas. Hampir seperti teka-teki anak-anak. Contoh: "Aku adalah hasil dari 2+2." (untuk angka 4) atau "Aku adalah angka pertama." (untuk angka 1).
-         - **Tingkat 5 (Sedang):** Berikan petunjuk yang cerdas dan sedikit samar, membutuhkan sedikit pemikiran. Ini adalah tingkat kesulitan standar. Contoh: "Aku adalah angka yang sering dikaitkan dengan nasib buruk." (untuk angka 13).
-         - **Tingkat 10 (Sangat Sulit):** Berikan petunjuk yang lebih abstrak, metaforis, atau memerlukan pengetahuan umum yang lebih luas. Petunjuk harus tetap logis dan bisa dipecahkan, tetapi sangat menantang. Contoh: "Dalam mitologi Romawi, aku adalah jumlah dewa utama di Olympus." (untuk angka 12) atau "Aku adalah nomor atom untuk Oksigen." (untuk angka 8).
-      3. Kembalikan respons Anda sebagai objek JSON dengan dua kunci: "clue" (petunjuk Anda) dan "chosenNumber" (angka yang Anda pilih).
-
-      Contoh respons untuk angka 8 dengan kesulitan sedang:
-      {
-        "clue": "Aku mencari angka yang terlihat seperti kacamata yang diletakkan miring, atau mungkin simbol tak terhingga.",
-        "chosenNumber": 8
-      }
-      `;
-
-          const response = await ai.models.generateContent({
-            model: "gemini-2.5-flash",
-            contents: prompt,
-            config: {
-              responseMimeType: "application/json",
-              responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                  clue: {
-                    type: Type.STRING,
-                    description: 'Petunjuk samar tentang angka yang dipilih, disesuaikan dengan tingkat kesulitan.',
-                  },
-                  chosenNumber: {
-                    type: Type.INTEGER,
-                    description: 'Angka yang dipilih dari daftar yang tersedia.',
-                  },
-                },
-                required: ["clue", "chosenNumber"],
-              },
+          const response = await fetch('/api/getClue', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
             },
+            body: JSON.stringify({ availableNumbers, round, difficulty }),
           });
 
-          const jsonText = response.text.trim();
-          const parsed = JSON.parse(jsonText);
+          if (!response.ok) {
+            const errorData = await response.json();
+            throw new Error(errorData.error || 'Network response was not ok');
+          }
 
-          if (!availableNumbers.includes(parsed.chosenNumber)) {
+          const data = await response.json();
+          
+          if (!availableNumbers.includes(data.chosenNumber)) {
               console.warn("AI memilih angka yang tidak ada dalam daftar yang tersedia. Memilih secara acak.");
               const randomIndex = Math.floor(Math.random() * availableNumbers.length);
-              parsed.chosenNumber = availableNumbers[randomIndex];
+              data.chosenNumber = availableNumbers[randomIndex];
           }
-          
-          return parsed;
+
+          return data;
 
         } catch (error) {
-          console.error("Error generating clue:", error);
+          console.error("Error fetching clue from server:", error);
+          // Fallback jika backend gagal
           const randomIndex = Math.floor(Math.random() * availableNumbers.length);
           const chosenNumber = availableNumbers[randomIndex];
           return {
-            clue: `Aku sedang memikirkan angka... ${chosenNumber}. (Terjadi kesalahan pada AI, jadi ini gratis untukmu!)`,
+            clue: `Aku sedang memikirkan angka... ${chosenNumber}. (Terjadi kesalahan pada server, jadi ini gratis untukmu!)`,
             chosenNumber: chosenNumber,
           };
         }
@@ -250,7 +214,7 @@
         const [roomCode, setRoomCode] = useState('');
         const [joinRoomInput, setJoinRoomInput] = useState('');
         const [joinError, setJoinError] = useState('');
-
+        
         const encodeSettings = useCallback((totalNumbers, hidingTime, difficulty) => {
           const n = totalNumbers - 4;
           const t = hidingTime - 5;
@@ -532,8 +496,8 @@
         };
 
         return (
-          <main className="bg-slate-900 text-white min-h-screen flex flex-col items-center justify-center p-4 font-sans">
-            {renderContent()}
+          <main className="bg-slate-900 text-white min-h-screen flex flex-col items-center justify-center p-4 font-sans relative">
+              {renderContent()}
           </main>
         );
       };
