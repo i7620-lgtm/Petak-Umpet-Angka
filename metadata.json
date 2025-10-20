@@ -1,0 +1,5 @@
+{
+  "name": "Petak Umpet Angka",
+  "description": "A hide-and-seek game where you try to outsmart an AI seeker. The AI gives a clue about the number it will check, and you must hide in a number you think is safe. Survive until the end to win!",
+  "requestFramePermissions": []
+}
