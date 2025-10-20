@@ -1,24 +1,549 @@
 <!DOCTYPE html>
 <html lang="en">
   <head>
-    <meta charset="UTF-," />
+    <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <link rel="icon" href="data:,">
+    <link rel="icon" href="data:," />
     <title>Number Hide and Seek</title>
     <script src="https://cdn.tailwindcss.com"></script>
-  <script type="importmap">
-{
-  "imports": {
-    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
-    "@google/genai": "https://aistudiocdn.com/@google/genai@^1.25.0",
-    "react/": "https://aistudiocdn.com/react@^19.2.0/",
-    "react": "https://aistudiocdn.com/react@^19.2.0"
-  }
-}
-</script>
-</head>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script type="importmap">
+      {
+        "imports": {
+          "react-dom/client": "https://aistudiocdn.com/react-dom@^19.2.0/client",
+          "@google/genai": "https://aistudiocdn.com/@google/genai@^1.25.0",
+          "react": "https://aistudiocdn.com/react@^19.2.0"
+        }
+      }
+    </script>
+  </head>
   <body class="bg-slate-900 text-white">
     <div id="root"></div>
-    <script type="module" src="index.tsx"></script>
+    <script type="text/babel" data-type="module">
+      // --- All application code is now in this single file ---
+
+      import React, { useState, useEffect, useCallback } from 'react';
+      import ReactDOM from 'react-dom/client';
+      import { GoogleGenAI, Type } from "@google/genai";
+
+      // --- from types.ts ---
+      const GameState = {
+        Welcome: 0,
+        Lobby: 1,
+        Clue: 2,
+        Hiding: 3,
+        Seeking: 4,
+        Result: 5,
+        GameOver: 6,
+        Win: 7,
+      };
+      Object.freeze(GameState);
+
+      // --- from services/geminiService.ts ---
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      async function getSeekerClue(availableNumbers, round, difficulty) {
+        try {
+          const prompt = `Anda adalah "pencari" dalam permainan petak umpet angka.
+      Ini adalah ronde ${round}.
+      Tingkat kesulitan yang diminta adalah ${difficulty} dari 10.
+
+      Angka yang tersedia untuk Anda pilih adalah: [${availableNumbers.join(', ')}].
+
+      Tugas Anda:
+      1. Secara rahasia, pilih satu angka dari daftar yang tersedia.
+      2. Buat petunjuk tentang angka yang Anda pilih, sesuaikan kerumitan petunjuk dengan tingkat kesulitan yang diminta:
+         - **Tingkat 1 (Sangat Mudah):** Berikan petunjuk yang sangat langsung dan jelas. Hampir seperti teka-teki anak-anak. Contoh: "Aku adalah hasil dari 2+2." (untuk angka 4) atau "Aku adalah angka pertama." (untuk angka 1).
+         - **Tingkat 5 (Sedang):** Berikan petunjuk yang cerdas dan sedikit samar, membutuhkan sedikit pemikiran. Ini adalah tingkat kesulitan standar. Contoh: "Aku adalah angka yang sering dikaitkan dengan nasib buruk." (untuk angka 13).
+         - **Tingkat 10 (Sangat Sulit):** Berikan petunjuk yang lebih abstrak, metaforis, atau memerlukan pengetahuan umum yang lebih luas. Petunjuk harus tetap logis dan bisa dipecahkan, tetapi sangat menantang. Contoh: "Dalam mitologi Romawi, aku adalah jumlah dewa utama di Olympus." (untuk angka 12) atau "Aku adalah nomor atom untuk Oksigen." (untuk angka 8).
+      3. Kembalikan respons Anda sebagai objek JSON dengan dua kunci: "clue" (petunjuk Anda) dan "chosenNumber" (angka yang Anda pilih).
+
+      Contoh respons untuk angka 8 dengan kesulitan sedang:
+      {
+        "clue": "Aku mencari angka yang terlihat seperti kacamata yang diletakkan miring, atau mungkin simbol tak terhingga.",
+        "chosenNumber": 8
+      }
+      `;
+
+          const response = await ai.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: prompt,
+            config: {
+              responseMimeType: "application/json",
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  clue: {
+                    type: Type.STRING,
+                    description: 'Petunjuk samar tentang angka yang dipilih, disesuaikan dengan tingkat kesulitan.',
+                  },
+                  chosenNumber: {
+                    type: Type.INTEGER,
+                    description: 'Angka yang dipilih dari daftar yang tersedia.',
+                  },
+                },
+                required: ["clue", "chosenNumber"],
+              },
+            },
+          });
+
+          const jsonText = response.text.trim();
+          const parsed = JSON.parse(jsonText);
+
+          if (!availableNumbers.includes(parsed.chosenNumber)) {
+              console.warn("AI memilih angka yang tidak ada dalam daftar yang tersedia. Memilih secara acak.");
+              const randomIndex = Math.floor(Math.random() * availableNumbers.length);
+              parsed.chosenNumber = availableNumbers[randomIndex];
+          }
+          
+          return parsed;
+
+        } catch (error) {
+          console.error("Error generating clue:", error);
+          const randomIndex = Math.floor(Math.random() * availableNumbers.length);
+          const chosenNumber = availableNumbers[randomIndex];
+          return {
+            clue: `Aku sedang memikirkan angka... ${chosenNumber}. (Terjadi kesalahan pada AI, jadi ini gratis untukmu!)`,
+            chosenNumber: chosenNumber,
+          };
+        }
+      }
+
+      // --- from components/Instructions.tsx ---
+      const Instructions = ({ gameState, round, clue, result }) => {
+        const getInstructions = () => {
+          switch (gameState) {
+            case GameState.Welcome:
+              return {
+                title: "Selamat Datang di Petak Umpet Angka!",
+                text: "Akal-akali si Pencari AI! Atur permainanmu, buat room, dan undang teman-temanmu untuk bermain dengan aturan yang sama!",
+              };
+            case GameState.Lobby:
+              return {
+                title: "Room Telah Dibuat!",
+                text: "Bagikan kode room di bawah ini kepada teman-temanmu agar mereka bisa bergabung dan bermain dengan pengaturan yang sama.",
+              };
+            case GameState.Clue:
+              return {
+                title: `Ronde ${round}: Petunjuk dari Pencari`,
+                text: `"${clue}"`,
+              };
+            case GameState.Hiding:
+              return {
+                title: `Ronde ${round}: Pilih Tempat Sembunyi!`,
+                text: `Petunjuk: "${clue}"`,
+              };
+            case GameState.Seeking:
+              return {
+                title: `Ronde ${round}: Mencari...`,
+                text: "Pencari sedang bergerak! Di mana ia akan mencari?",
+              };
+            case GameState.Result:
+              if (result === 'caught') {
+                return { title: `Ronde ${round}: Tertangkap!`, text: "Pencari menemukanmu!" };
+              }
+              return { title: `Ronde ${round}: Kamu Aman!`, text: "Fiuh! Nyaris saja. Lanjut ke ronde berikutnya." };
+            case GameState.GameOver:
+              return {
+                title: "Permainan Selesai",
+                text: "Kamu telah ditangkap oleh Pencari. Semoga beruntung lain kali!",
+              };
+            case GameState.Win:
+              return {
+                title: "Selamat! Kamu Menang! 🎉",
+                text: "Kamu adalah yang terakhir bertahan! Kamu berhasil mengakali Pencari AI.",
+              };
+            default:
+              return { title: "", text: "" };
+          }
+        };
+
+        const { title, text } = getInstructions();
+        if (!title) return null;
+
+        return (
+          <div className="w-full max-w-md p-6 bg-slate-800/50 backdrop-blur-sm rounded-xl border border-slate-700 shadow-2xl">
+            <h2 className="text-2xl font-bold text-cyan-400 mb-3">{title}</h2>
+            <p className="text-slate-300 italic">{text}</p>
+          </div>
+        );
+      };
+
+      // --- from components/GameBoard.tsx ---
+      const NumberCell = ({ number, isAvailable, isUserHidden, isSeekerHere, isRevealed, onClick, isClickable }) => {
+        let cellClasses = "w-16 h-16 md:w-20 md:h-20 flex items-center justify-center rounded-lg transition-all duration-500 font-bold text-2xl md:text-3xl border-2";
+        let content = <>{number}</>;
+
+        if (isRevealed) {
+          if (isSeekerHere && isUserHidden) {
+            cellClasses += " bg-red-500 border-red-300 text-white transform scale-110 shadow-lg shadow-red-500/50";
+            content = <>😭<br/>{number}</>;
+          } else if (isSeekerHere) {
+            cellClasses += " bg-orange-500 border-orange-300 text-white transform scale-110 shadow-lg shadow-orange-500/50";
+            content = <>👀<br/>{number}</>;
+          } else if (isUserHidden) {
+            cellClasses += " bg-blue-500 border-blue-300 text-white transform scale-110 shadow-lg shadow-blue-500/50";
+            content = <>😎<br/>{number}</>;
+          } else {
+            cellClasses += " bg-slate-900 border-slate-700 text-slate-600 opacity-50";
+          }
+        } else if (!isAvailable) {
+          cellClasses += " bg-slate-800 border-slate-700 text-slate-600 cursor-not-allowed";
+        } else {
+          if (isClickable) {
+            cellClasses += " bg-slate-700 border-slate-600 hover:bg-cyan-800 hover:border-cyan-500 cursor-pointer";
+          } else {
+            cellClasses += " bg-slate-700 border-slate-600";
+          }
+        }
+        
+        return (
+          <div className={cellClasses} onClick={() => isClickable && isAvailable && onClick(number)}>
+            <div className="flex flex-col items-center justify-center text-center">
+              {content}
+            </div>
+          </div>
+        );
+      };
+
+      const GameBoard = ({ totalNumbers, availableNumbers, userPosition, seekerPosition, isRevealed, onNumberClick, isClickable }) => {
+        const numbers = Array.from({ length: totalNumbers }, (_, i) => i + 1);
+
+        return (
+          <div className="grid grid-cols-4 gap-3 p-4 bg-slate-800 rounded-lg border-2 border-slate-700 shadow-lg">
+            {numbers.map((num) => (
+              <NumberCell
+                key={num}
+                number={num}
+                isAvailable={availableNumbers.includes(num)}
+                isUserHidden={userPosition === num}
+                isSeekerHere={seekerPosition === num}
+                isRevealed={isRevealed && (seekerPosition === num || userPosition === num)}
+                onClick={onNumberClick}
+                isClickable={isClickable}
+              />
+            ))}
+          </div>
+        );
+      };
+
+      // --- from App.tsx ---
+      const App = () => {
+        const [gameState, setGameState] = useState(GameState.Welcome);
+        const [round, setRound] = useState(1);
+        const [availableNumbers, setAvailableNumbers] = useState([]);
+        const [userPosition, setUserPosition] = useState(null);
+        const [seekerPosition, setSeekerPosition] = useState(null);
+        const [clue, setClue] = useState('');
+        const [result, setResult] = useState(null);
+        const [isRevealed, setIsRevealed] = useState(false);
+        const [isLoading, setIsLoading] = useState(false);
+        const [totalNumbers, setTotalNumbers] = useState(16);
+        const [hidingTime, setHidingTime] = useState(10);
+        const [difficulty, setDifficulty] = useState(5);
+        const [hidingTimeLeft, setHidingTimeLeft] = useState(hidingTime);
+        const [roomCode, setRoomCode] = useState('');
+        const [joinRoomInput, setJoinRoomInput] = useState('');
+        const [joinError, setJoinError] = useState('');
+
+        const encodeSettings = useCallback((totalNumbers, hidingTime, difficulty) => {
+          const n = totalNumbers - 4;
+          const t = hidingTime - 5;
+          const d = difficulty - 1;
+          const combined = (n * 26 * 10) + (t * 10) + d;
+          const settingsCode = combined.toString(36).toUpperCase().padStart(3, '0');
+          const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+          let randomPart = '';
+          for (let i = 0; i < 3; i++) {
+            randomPart += chars.charAt(Math.floor(Math.random() * chars.length));
+          }
+          return settingsCode + randomPart;
+        }, []);
+
+        const decodeSettings = useCallback((code) => {
+          if (typeof code !== 'string' || code.length !== 6) return null;
+          try {
+            const settingsCode = code.substring(0, 3);
+            const combined = parseInt(settingsCode, 36);
+            if (isNaN(combined)) return null;
+            const d_norm = combined % 10;
+            const t_norm = Math.floor(combined / 10) % 26;
+            const n_norm = Math.floor(combined / (26 * 10));
+            const totalNumbers = n_norm + 4;
+            const hidingTime = t_norm + 5;
+            const difficulty = d_norm + 1;
+            if (totalNumbers < 4 || totalNumbers > 36 || hidingTime < 5 || hidingTime > 30 || difficulty < 1 || difficulty > 10) {
+              return null;
+            }
+            return { totalNumbers, hidingTime, difficulty };
+          } catch (e) {
+            return null;
+          }
+        }, []);
+
+        useEffect(() => {
+          const hash = window.location.hash;
+          if (hash.startsWith('#room=')) {
+            const potentialCode = hash.substring(6).toUpperCase().replace(/[^A-Z0-9]/g, '');
+            if (potentialCode.length === 6) {
+              const settings = decodeSettings(potentialCode);
+              if (settings) {
+                setTotalNumbers(settings.totalNumbers);
+                setHidingTime(settings.hidingTime);
+                setDifficulty(settings.difficulty);
+                setRoomCode(potentialCode);
+                setGameState(GameState.Lobby);
+              } else {
+                window.location.hash = '';
+              }
+            } else {
+              window.location.hash = '';
+            }
+          }
+        }, [decodeSettings]);
+
+        const handleCreateRoom = () => {
+          const code = encodeSettings(totalNumbers, hidingTime, difficulty);
+          setRoomCode(code);
+          window.location.hash = `room=${code}`;
+          setGameState(GameState.Lobby);
+        };
+
+        const handleJoinRoom = () => {
+          setJoinError('');
+          const settings = decodeSettings(joinRoomInput);
+          if (settings) {
+            setTotalNumbers(settings.totalNumbers);
+            setHidingTime(settings.hidingTime);
+            setDifficulty(settings.difficulty);
+            setRoomCode(joinRoomInput);
+            window.location.hash = `room=${joinRoomInput}`;
+            setGameState(GameState.Lobby);
+          } else {
+            setJoinError('Kode room tidak valid!');
+          }
+        };
+
+        const handleLeaveLobby = () => {
+          window.location.hash = '';
+          setRoomCode('');
+          setGameState(GameState.Welcome);
+        };
+
+        const handleNumberClick = useCallback((number) => {
+          if (gameState === GameState.Hiding && availableNumbers.includes(number)) {
+            setUserPosition(number);
+            setGameState(GameState.Seeking);
+          }
+        }, [gameState, availableNumbers]);
+
+        const resetGame = useCallback(() => {
+          setGameState(GameState.Lobby);
+        }, []);
+
+        const startGame = useCallback(async () => {
+          setIsLoading(true);
+          setRound(1);
+          const initialNumbers = Array.from({ length: totalNumbers }, (_, i) => i + 1);
+          setAvailableNumbers(initialNumbers);
+          setGameState(GameState.Clue);
+          setUserPosition(null);
+          setSeekerPosition(null);
+          setResult(null);
+          setIsRevealed(false);
+          setHidingTimeLeft(hidingTime);
+          setClue('');
+          try {
+            const { clue: newClue, chosenNumber } = await getSeekerClue(initialNumbers, 1, difficulty);
+            setClue(newClue);
+            setSeekerPosition(chosenNumber);
+            setGameState(GameState.Hiding);
+          } catch (error) {
+            console.error("Failed to get clue:", error);
+            setGameState(GameState.Lobby);
+          } finally {
+            setIsLoading(false);
+          }
+        }, [totalNumbers, hidingTime, difficulty]);
+
+        const startNewRound = useCallback(async () => {
+          setIsLoading(true);
+          const currentAvailable = availableNumbers.filter(n => n !== seekerPosition);
+          setAvailableNumbers(currentAvailable);
+          setGameState(GameState.Clue);
+          setUserPosition(null);
+          setResult(null);
+          setIsRevealed(false);
+          setHidingTimeLeft(hidingTime);
+          setClue('');
+          try {
+            const newRound = round + 1;
+            const { clue: newClue, chosenNumber } = await getSeekerClue(currentAvailable, newRound, difficulty);
+            setRound(newRound);
+            setClue(newClue);
+            setSeekerPosition(chosenNumber);
+            setGameState(GameState.Hiding);
+          } catch (error) {
+            console.error("Failed to get clue:", error);
+            setGameState(GameState.Lobby);
+          } finally {
+            setIsLoading(false);
+          }
+        }, [round, seekerPosition, availableNumbers, hidingTime, difficulty]);
+
+        useEffect(() => {
+          if (gameState !== GameState.Hiding) return;
+          if (hidingTimeLeft > 0) {
+            const timerId = setTimeout(() => setHidingTimeLeft(t => t - 1), 1000);
+            return () => clearTimeout(timerId);
+          } else if (userPosition === null) {
+            const randomIndex = Math.floor(Math.random() * availableNumbers.length);
+            handleNumberClick(availableNumbers[randomIndex]);
+          }
+        }, [gameState, hidingTimeLeft, userPosition, availableNumbers, handleNumberClick]);
+        
+        useEffect(() => {
+            if (gameState === GameState.Seeking) {
+                const timerId = setTimeout(() => {
+                    setIsRevealed(true);
+                    const isCaught = userPosition === seekerPosition;
+                    setResult(isCaught ? 'caught' : 'safe');
+                    setGameState(GameState.Result);
+                }, 2000);
+                return () => clearTimeout(timerId);
+            } else if (gameState === GameState.Result && result) {
+                if (result === 'caught') {
+                    const timerId = setTimeout(() => setGameState(GameState.GameOver), 3000);
+                    return () => clearTimeout(timerId);
+                }
+                if (result === 'safe') {
+                    const newAvailableCount = availableNumbers.filter(n => n !== seekerPosition).length;
+                    if (newAvailableCount <= 1) {
+                        const timerId = setTimeout(() => setGameState(GameState.Win), 3000);
+                        return () => clearTimeout(timerId);
+                    }
+                }
+            }
+        }, [gameState, result, userPosition, seekerPosition, availableNumbers]);
+
+
+        const renderContent = () => {
+          if (gameState === GameState.Welcome) {
+            return (
+              <div className="space-y-6 flex flex-col items-center w-full max-w-md">
+                <Instructions gameState={gameState} round={round} clue={clue} result={result} />
+                <div className="w-full p-6 bg-slate-800/50 backdrop-blur-sm rounded-xl border border-slate-700 space-y-4">
+                  <h3 className="text-xl font-bold text-cyan-400">Pengaturan Permainan</h3>
+                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between">
+                    <label htmlFor="totalNumbers" className="text-slate-300 mb-2 sm:mb-0">Jumlah Angka:</label>
+                    <input type="number" id="totalNumbers" value={totalNumbers} onChange={(e) => setTotalNumbers(Math.max(4, Math.min(36, parseInt(e.target.value, 10) || 4)))} className="bg-slate-900 border border-slate-600 rounded-md px-3 py-2 w-full sm:w-24 text-center" min="4" max="36" />
+                  </div>
+                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between">
+                    <label htmlFor="hidingTime" className="text-slate-300 mb-2 sm:mb-0">Waktu Bersembunyi (detik):</label>
+                    <input type="number" id="hidingTime" value={hidingTime} onChange={(e) => setHidingTime(Math.max(5, Math.min(30, parseInt(e.target.value, 10) || 5)))} className="bg-slate-900 border border-slate-600 rounded-md px-3 py-2 w-full sm:w-24 text-center" min="5" max="30" />
+                  </div>
+                  <div className="flex flex-col">
+                    <label htmlFor="difficulty" className="text-slate-300 mb-2">Tingkat Kesulitan AI: <span className="font-bold text-cyan-400">{difficulty}</span></label>
+                    <input type="range" id="difficulty" value={difficulty} onChange={(e) => setDifficulty(parseInt(e.target.value, 10))} className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer" min="1" max="10" />
+                  </div>
+                  <button onClick={handleCreateRoom} className="w-full mt-4 px-6 py-3 bg-cyan-500 text-slate-900 font-bold rounded-lg shadow-lg hover:bg-cyan-400 transition-colors">Buat Room</button>
+                </div>
+                <div className="w-full p-6 bg-slate-800/50 backdrop-blur-sm rounded-xl border border-slate-700 space-y-4">
+                  <h3 className="text-xl font-bold text-cyan-400">Gabung Room</h3>
+                  <div className="flex flex-col sm:flex-row gap-2">
+                    <input
+                      type="text"
+                      placeholder="Masukkan kode room..."
+                      value={joinRoomInput}
+                      onChange={(e) => {
+                        if (joinError) setJoinError('');
+                        const sanitized = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+                        setJoinRoomInput(sanitized.substring(0, 6));
+                      }}
+                      className="flex-grow bg-slate-900 border border-slate-600 rounded-md px-3 py-2"
+                      maxLength={6}
+                    />
+                    <button onClick={handleJoinRoom} disabled={!joinRoomInput} className="px-6 py-2 bg-slate-600 text-white font-bold rounded-lg shadow-lg hover:bg-slate-500 disabled:bg-slate-700 disabled:cursor-not-allowed transition-colors">Gabung</button>
+                  </div>
+                  {joinError && <p className="text-red-400 text-sm mt-2">{joinError}</p>}
+                </div>
+              </div>
+            );
+          }
+
+          if (gameState === GameState.Lobby) {
+            const baseUrl = window.location.origin + window.location.pathname;
+            const joinUrl = `${baseUrl}#room=${roomCode}`;
+            const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(joinUrl)}`;
+            return (
+              <div className="space-y-6 flex flex-col items-center w-full max-w-md text-center">
+                <Instructions gameState={gameState} round={round} clue={clue} result={result} />
+                <div className="w-full p-6 bg-slate-800/50 backdrop-blur-sm rounded-xl border border-slate-700 space-y-4">
+                  <h3 className="text-lg font-bold text-cyan-400">Kode Room</h3>
+                  <p className="bg-slate-900 p-3 rounded-md font-mono text-2xl tracking-widest break-all">{roomCode}</p>
+                  <img src={qrUrl} alt="QR Code" className="mx-auto my-4 rounded-lg border-4 border-slate-700" />
+                  <p className="text-sm text-slate-400">Pindai kode QR atau bagikan tautan untuk mengundang.</p>
+                </div>
+                <div className="h-16 flex items-center space-x-4">
+                  <button onClick={handleLeaveLobby} className="px-6 py-3 bg-slate-600 text-white font-bold rounded-lg shadow-lg hover:bg-slate-500 transition-colors">Kembali</button>
+                  <button onClick={startGame} className="px-6 py-3 bg-cyan-500 text-slate-900 font-bold rounded-lg shadow-lg hover:bg-cyan-400 transition-colors">Mulai Bermain</button>
+                </div>
+              </div>
+            )
+          }
+
+          return (
+            <div className="space-y-6 flex flex-col items-center w-full">
+              <Instructions gameState={gameState} round={round} clue={clue} result={result} />
+              {isLoading && (
+                <div className="text-center">
+                  <p className="text-xl text-cyan-400 animate-pulse">Pencari sedang berpikir...</p>
+                </div>
+              )}
+              {gameState === GameState.Hiding && (
+                <div className="text-2xl font-bold text-yellow-400 bg-slate-800/50 px-4 py-2 rounded-lg">
+                  Waktu: {hidingTimeLeft}s
+                </div>
+              )}
+              <GameBoard
+                totalNumbers={totalNumbers}
+                availableNumbers={availableNumbers}
+                userPosition={userPosition}
+                seekerPosition={seekerPosition}
+                isRevealed={isRevealed}
+                onNumberClick={handleNumberClick}
+                isClickable={gameState === GameState.Hiding}
+              />
+              <div className="h-16 flex items-center">
+                {gameState === GameState.Result && result === 'safe' && availableNumbers.filter(n => n !== seekerPosition).length > 1 && (
+                  <button onClick={startNewRound} className="px-6 py-3 bg-cyan-500 text-slate-900 font-bold rounded-lg shadow-lg hover:bg-cyan-400 transition-colors">Ronde Berikutnya</button>
+                )}
+                {(gameState === GameState.GameOver || gameState === GameState.Win) && (
+                  <button onClick={resetGame} className="px-6 py-3 bg-cyan-500 text-slate-900 font-bold rounded-lg shadow-lg hover:bg-cyan-400 transition-colors">Main Lagi</button>
+                )}
+              </div>
+            </div>
+          );
+        };
+
+        return (
+          <main className="bg-slate-900 text-white min-h-screen flex flex-col items-center justify-center p-4 font-sans">
+            {renderContent()}
+          </main>
+        );
+      };
+
+      // --- from index.tsx ---
+      const rootElement = document.getElementById('root');
+      if (!rootElement) {
+        throw new Error("Could not find root element to mount to");
+      }
+
+      const root = ReactDOM.createRoot(rootElement);
+      root.render(
+        <React.StrictMode>
+          <App />
+        </React.StrictMode>
+      );
+    </script>
   </body>
 </html>
