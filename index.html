@@ -19,6 +19,12 @@
   </head>
   <body class="bg-slate-900 text-white">
     <div id="root"></div>
+    
+    <!-- Polyfill for process.env -->
+    <script>
+      window.process = window.process || { env: {} };
+    </script>
+
     <script type="text/babel" data-type="module">
       // --- All application code is now in this single file ---
 
